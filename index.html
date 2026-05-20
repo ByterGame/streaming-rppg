@@ -64,20 +64,21 @@ const waveCvs   = document.getElementById("waveform");
 const ctx  = display.getContext("2d", {willReadFrequently:true});
 const wctx = waveCvs.getContext("2d");
 
-const FS      = 30;
-const WIN_SEC = 15;
-const WIN     = FS * WIN_SEC;
-const CHUNK   = 30;
+const WIN_SEC = 10;
 const HR_LOW  = 0.7;
 const HR_HIGH = 4.0;
 
 let landmarker = null;
 let lastTs     = -1;
 let rawBuf     = [];
-let posBuf     = [];
 let frameCnt   = 0;
 let firstHr    = true;
 let audioCtx   = null;
+
+// FPS measurement — running average over last 120 frames
+let fpsBuf     = [];
+let prevFrameTs = null;
+let measuredFs = 30;
 
 const ext = document.createElement("canvas");
 const ectx = ext.getContext("2d", {willReadFrequently:true});
@@ -92,26 +93,36 @@ function beep(){
   o.start();o.stop(audioCtx.currentTime+.25);
 }
 
-function pos(r,g,b){
-  const n=r.length;if(n<2)return[];
-  let mR=0,mG=0,mB=0;
-  for(let i=0;i<n;i++){mR+=r[i];mG+=g[i];mB+=b[i]}
-  mR/=n;mG/=n;mB/=n;
-  if(mR===0)mR=1;if(mG===0)mG=1;if(mB===0)mB=1;
-  const s1=new Float64Array(n),s2=new Float64Array(n);
-  for(let i=0;i<n;i++){
-    const cR=r[i]/mR,cG=g[i]/mG,cB=b[i]/mB;
-    s1[i]=cG-cB;s2[i]=cG+cB-2*cR;
+// POS with overlap-add — matches baseline_pipeline.py exactly
+function posOverlapAdd(R,G,B,fs,winSec){
+  const n=R.length;
+  const L=Math.max(8,Math.round(fs*winSec));
+  const H=new Float64Array(n);
+  if(n<L)return H;
+  for(let nn=L-1;nn<n;nn++){
+    const m=nn-L+1;
+    let mR=0,mG=0,mB=0;
+    for(let i=m;i<=nn;i++){mR+=R[i];mG+=G[i];mB+=B[i]}
+    mR/=L;mG/=L;mB/=L;
+    if(mR===0)mR=1;if(mG===0)mG=1;if(mB===0)mB=1;
+    const s1=new Float64Array(L),s2=new Float64Array(L);
+    for(let i=0;i<L;i++){
+      const cR=R[m+i]/mR,cG=G[m+i]/mG,cB=B[m+i]/mB;
+      s1[i]=cG-cB; // [0,1,-1] @ [cR,cG,cB]
+      s2[i]=-2*cR+cG+cB; // [-2,1,1] @ [cR,cG,cB]
+    }
+    let v1=0,v2=0;
+    for(let i=0;i<L;i++){v1+=s1[i];v2+=s2[i]}
+    const mean1=v1/L,mean2=v2/L;
+    v1=0;v2=0;
+    for(let i=0;i<L;i++){v1+=(s1[i]-mean1)**2;v2+=(s2[i]-mean2)**2}
+    const sd1=Math.sqrt(v1/L),sd2=Math.sqrt(v2/L);
+    const alpha=sd2>0?sd1/sd2:0;
+    for(let i=0;i<L;i++){
+      H[m+i]+=s1[i]+alpha*s2[i];
+    }
   }
-  let v1=0,v2=0;
-  for(let i=0;i<n;i++){v1+=s1[i];v2+=s2[i]}
-  const m1=v1/n,m2=v2/n;v1=0;v2=0;
-  for(let i=0;i<n;i++){v1+=(s1[i]-m1)**2;v2+=(s2[i]-m2)**2}
-  const sd1=Math.sqrt(v1/n),sd2=Math.sqrt(v2/n);
-  const a=sd2>0?sd1/sd2:0;
-  const out=new Float64Array(n);
-  for(let i=0;i<n;i++)out[i]=s1[i]+a*s2[i];
-  return out;
+  return H;
 }
 
 function detrend(x){
@@ -125,12 +136,25 @@ function detrend(x){
   return y;
 }
 
+// Cascaded biquad bandpass — 3 sections (6th order Butterworth), zero-phase via forward-backward
 function butterBpf(x,lo,hi,fs){
   const n=x.length;if(n<8)return x.slice();
-  const w0=Math.PI*(lo+hi)/fs,bw=Math.PI*(hi-lo)/fs;
-  const sinW=Math.sin(w0),cosW=Math.cos(w0),sinB=Math.sin(bw),alpha=sinB/2;
-  const b0=alpha,b1=0,b2=-alpha,a0=1+alpha,a1=-2*cosW,a2=1-alpha;
-  const sections=[{b0:b0/a0,b1:b1/a0,b2:b2/a0,a1:a1/a0,a2:a2/a0}];
+  const nyq=fs/2;
+  const loN=lo/nyq,hiN=hi/nyq;
+  const w0=Math.PI*(loN+hiN),bw=Math.PI*(hiN-loN);
+  const sinW=Math.sin(w0),cosW=Math.cos(w0),sinB=Math.sin(bw);
+
+  const Qs=[1.0, 0.51763809, 0.70710678]; // Butterworth 6th-order section Qs
+  const sections=[];
+  for(const Q of Qs){
+    const alpha=sinB/(2*Q);
+    const a0=1+alpha,a1=-2*cosW,a2=1-alpha;
+    sections.push({
+      b0:alpha/a0,b1:0,b2:-alpha/a0,
+      a1:a1/a0,a2:a2/a0
+    });
+  }
+
   function biquad(v,s){
     const y=new Float64Array(n);
     let z1=0,z2=0;
@@ -138,13 +162,24 @@ function butterBpf(x,lo,hi,fs){
       const t=v[i]-s.a1*z1-s.a2*z2;
       y[i]=s.b0*t+s.b1*z1+s.b2*z2;
       z2=z1;z1=t;
-    }return y;
+    }
+    return y;
   }
-  function cascade(v){for(const s of sections)v=biquad(v,s);return v}
+  function cascade(v){
+    for(const s of sections) v=biquad(v,s);
+    return v;
+  }
+
+  // forward pass
   let y=cascade(x);
-  const rev=new Float64Array(n);for(let i=0;i<n;i++)rev[i]=y[n-1-i];
+  // reverse
+  const rev=new Float64Array(n);
+  for(let i=0;i<n;i++)rev[i]=y[n-1-i];
+  // backward pass
   y=cascade(rev);
-  const out=new Float64Array(n);for(let i=0;i<n;i++)out[i]=y[n-1-i];
+  // reverse back
+  const out=new Float64Array(n);
+  for(let i=0;i<n;i++)out[i]=y[n-1-i];
   return out;
 }
 
@@ -230,6 +265,7 @@ function foreheadMask(lm,w,h){
   ];
 }
 
+// Extract RGB with YCrCb skin filtering — matches baseline skin detection
 function extractRGB(img,poly,w,h){
   const d=img.data;
   const xs=poly.map(p=>Math.round(p.x)),ys=poly.map(p=>Math.round(p.y));
@@ -240,10 +276,18 @@ function extractRGB(img,poly,w,h){
   let sr=0,sg=0,sb=0,cnt=0;
   for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
     if(((x-ccx)**2)/rx2+((y-ccy)**2)/ry2>1)continue;
-    const i=(y*w+x)*4;sr+=d[i];sg+=d[i+1];sb+=d[i+2];cnt++;
+    const i=(y*w+x)*4;
+    const R=d[i],G=d[i+1],B=d[i+2];
+    // BGR->YCrCb (OpenCV-compatible): Cr = 128 + 0.5*R - 0.4187*G - 0.0813*B
+    //                                 Cb = 128 - 0.1687*R - 0.3313*G + 0.5*B
+    const Cr=128+0.5*R-0.4187*G-0.0813*B;
+    const Cb=128-0.1687*R-0.3313*G+0.5*B;
+    // skin range: Cr in [133,173], Cb in [77,127]
+    if(Cr<133||Cr>173||Cb<77||Cb>127)continue;
+    sr+=R;sg+=G;sb+=B;cnt++;
   }
   if(!cnt)return{r:0,g:0,b:0};
-  return{r:sr/cnt/255,g:sg/cnt/255,b:sb/cnt/255};
+  return{r:sr/cnt,g:sg/cnt,b:sb/cnt};
 }
 
 async function processFrame(){
@@ -260,6 +304,16 @@ async function processFrame(){
     const ts=performance.now();
     if(ts===lastTs){requestAnimationFrame(processFrame);return}
     lastTs=ts;
+
+    // FPS measurement
+    if(prevFrameTs!==null){
+      const dt=(ts-prevFrameTs)/1000;
+      fpsBuf.push(1/dt);
+      if(fpsBuf.length>120)fpsBuf.shift();
+      measuredFs=fpsBuf.reduce((a,b)=>a+b,0)/fpsBuf.length;
+    }
+    prevFrameTs=ts;
+
     const res=landmarker.detectForVideo(ext,ts);
 
     if(!res.faceLandmarks||!res.faceLandmarks.length){
@@ -271,30 +325,35 @@ async function processFrame(){
     const mask=foreheadMask(lm,W,H);
 
     ctx.fillStyle="rgba(0,255,136,.25)";ctx.strokeStyle="#00ff88";ctx.lineWidth=2;
-    ctx.beginPath();ctx.moveTo(mask[0].x,mask[0].y);
-    for(let i=1;i<mask.length;i++)ctx.lineTo(mask[i].x,mask[i].y);
+    ctx.beginPath();ctx.moveTo(W-mask[0].x,mask[0].y);
+    for(let i=1;i<mask.length;i++)ctx.lineTo(W-mask[i].x,mask[i].y);
     ctx.closePath();ctx.fill();ctx.stroke();
 
     const rgb=extractRGB(ectx.getImageData(0,0,W,H),mask,W,H);
     rawBuf.push([rgb.r,rgb.g,rgb.b]);
-    if(++frameCnt>=CHUNK){
-      frameCnt=0;
-      const end=rawBuf.length,start=Math.max(0,end-WIN);
-      const rr=[],gg=[],bb=[];
-      for(let i=start;i<end;i++){rr.push(rawBuf[i][0]);gg.push(rawBuf[i][1]);bb.push(rawBuf[i][2])}
-      posBuf=pos(rr,gg,bb);
-      if(rawBuf.length>WIN*2)rawBuf.splice(0,rawBuf.length-WIN);
-      statusEl.textContent="measuring…";
 
-      if(posBuf.length>=WIN){
-        const w=posBuf.slice(-WIN);
-        const d=detrend(w);
-        const f=butterBpf(d,HR_LOW,HR_HIGH,FS);
-        const r=peakFreq(f,FS,HR_LOW,HR_HIGH);
+    // Recalculate every 30 frames (≈1s at 30fps)
+    if(++frameCnt>=30){
+      frameCnt=0;
+      const win=Math.round(measuredFs*WIN_SEC);
+      const R=[],G=[],B=[];
+      for(let i=0;i<rawBuf.length;i++){
+        R.push(rawBuf[i][0]);G.push(rawBuf[i][1]);B.push(rawBuf[i][2]);
+      }
+      if(rawBuf.length>win*2)rawBuf.splice(0,rawBuf.length-win);
+
+      statusEl.textContent=`measuring… (${measuredFs.toFixed(1)} fps)`;
+
+      if(R.length>=win){
+        const pulse=posOverlapAdd(R,G,B,measuredFs,WIN_SEC);
+        const tail=pulse.slice(-win);
+        const d=detrend(tail);
+        const f=butterBpf(d,HR_LOW,HR_HIGH,measuredFs);
+        const r=peakFreq(f,measuredFs,HR_LOW,HR_HIGH);
         if(isFinite(r.bpm)&&r.bpm>=42&&r.bpm<=240){
           const bpm=Math.round(r.bpm);
           hrValue.textContent=bpm;
-          statusEl.textContent="heart rate: "+bpm+" bpm";
+          statusEl.textContent=`heart rate: ${bpm} bpm (${measuredFs.toFixed(1)} fps)`;
           drawWave(f);
           if(firstHr){firstHr=false;beep()}
         }
