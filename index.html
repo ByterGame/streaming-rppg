@@ -64,21 +64,20 @@ const waveCvs   = document.getElementById("waveform");
 const ctx  = display.getContext("2d", {willReadFrequently:true});
 const wctx = waveCvs.getContext("2d");
 
+const FS      = 30;
 const WIN_SEC = 10;
+const WIN     = FS * WIN_SEC;   // 300 samples
 const HR_LOW  = 0.7;
 const HR_HIGH = 4.0;
 
 let landmarker = null;
-let lastTs     = -1;
 let rawBuf     = [];
-let frameCnt   = 0;
 let firstHr    = true;
 let audioCtx   = null;
-
-// FPS measurement — running average over last 120 frames
-let fpsBuf     = [];
-let prevFrameTs = null;
-let measuredFs = 30;
+let hrHistory  = [];
+let prevVts    = null;
+let fpsEma     = 30;
+let totalFrames = 0;
 
 const ext = document.createElement("canvas");
 const ectx = ext.getContext("2d", {willReadFrequently:true});
@@ -93,34 +92,29 @@ function beep(){
   o.start();o.stop(audioCtx.currentTime+.25);
 }
 
-// POS with overlap-add — matches baseline_pipeline.py exactly
-function posOverlapAdd(R,G,B,fs,winSec){
-  const n=R.length;
-  const L=Math.max(8,Math.round(fs*winSec));
+// POS signal — overlap-add matching baseline_pipeline.py
+function posSignal(R,G,B,L){
+  const n=R.length;if(n<L)return new Float64Array(n);
   const H=new Float64Array(n);
-  if(n<L)return H;
   for(let nn=L-1;nn<n;nn++){
     const m=nn-L+1;
     let mR=0,mG=0,mB=0;
     for(let i=m;i<=nn;i++){mR+=R[i];mG+=G[i];mB+=B[i]}
     mR/=L;mG/=L;mB/=L;
     if(mR===0)mR=1;if(mG===0)mG=1;if(mB===0)mB=1;
+    let v1=0,v2=0;
     const s1=new Float64Array(L),s2=new Float64Array(L);
     for(let i=0;i<L;i++){
       const cR=R[m+i]/mR,cG=G[m+i]/mG,cB=B[m+i]/mB;
-      s1[i]=cG-cB; // [0,1,-1] @ [cR,cG,cB]
-      s2[i]=-2*cR+cG+cB; // [-2,1,1] @ [cR,cG,cB]
+      s1[i]=cG-cB;s2[i]=-2*cR+cG+cB;
+      v1+=s1[i];v2+=s2[i];
     }
-    let v1=0,v2=0;
-    for(let i=0;i<L;i++){v1+=s1[i];v2+=s2[i]}
     const mean1=v1/L,mean2=v2/L;
-    v1=0;v2=0;
-    for(let i=0;i<L;i++){v1+=(s1[i]-mean1)**2;v2+=(s2[i]-mean2)**2}
-    const sd1=Math.sqrt(v1/L),sd2=Math.sqrt(v2/L);
+    let sd1=0,sd2=0;
+    for(let i=0;i<L;i++){sd1+=(s1[i]-mean1)**2;sd2+=(s2[i]-mean2)**2}
+    sd1=Math.sqrt(sd1/L);sd2=Math.sqrt(sd2/L);
     const alpha=sd2>0?sd1/sd2:0;
-    for(let i=0;i<L;i++){
-      H[m+i]+=s1[i]+alpha*s2[i];
-    }
+    for(let i=0;i<L;i++) H[m+i]+=s1[i]+alpha*s2[i];
   }
   return H;
 }
@@ -136,50 +130,24 @@ function detrend(x){
   return y;
 }
 
-// Cascaded biquad bandpass — 3 sections (6th order Butterworth), zero-phase via forward-backward
+// 2nd-order biquad bandpass, forward-backward (zero-phase)
 function butterBpf(x,lo,hi,fs){
   const n=x.length;if(n<8)return x.slice();
-  const nyq=fs/2;
-  const loN=lo/nyq,hiN=hi/nyq;
-  const w0=Math.PI*(loN+hiN),bw=Math.PI*(hiN-loN);
-  const sinW=Math.sin(w0),cosW=Math.cos(w0),sinB=Math.sin(bw);
-
-  const Qs=[1.0, 0.51763809, 0.70710678]; // Butterworth 6th-order section Qs
-  const sections=[];
-  for(const Q of Qs){
-    const alpha=sinB/(2*Q);
-    const a0=1+alpha,a1=-2*cosW,a2=1-alpha;
-    sections.push({
-      b0:alpha/a0,b1:0,b2:-alpha/a0,
-      a1:a1/a0,a2:a2/a0
-    });
-  }
-
-  function biquad(v,s){
-    const y=new Float64Array(n);
-    let z1=0,z2=0;
+  const w0=Math.PI*(lo+hi)/fs,bw=Math.PI*(hi-lo)/fs;
+  const sinW=Math.sin(w0),cosW=Math.cos(w0),sinB=Math.sin(bw),alpha=sinB/2;
+  const a0=1+alpha,a1=-2*cosW,a2=1-alpha;
+  const s={b0:alpha/a0,b1:0,b2:-alpha/a0,a1:a1/a0,a2:a2/a0};
+  function biquad(v){
+    const y=new Float64Array(n);let z1=0,z2=0;
     for(let i=0;i<n;i++){
       const t=v[i]-s.a1*z1-s.a2*z2;
-      y[i]=s.b0*t+s.b1*z1+s.b2*z2;
-      z2=z1;z1=t;
-    }
-    return y;
+      y[i]=s.b0*t+s.b1*z1+s.b2*z2;z2=z1;z1=t;
+    }return y;
   }
-  function cascade(v){
-    for(const s of sections) v=biquad(v,s);
-    return v;
-  }
-
-  // forward pass
-  let y=cascade(x);
-  // reverse
-  const rev=new Float64Array(n);
-  for(let i=0;i<n;i++)rev[i]=y[n-1-i];
-  // backward pass
-  y=cascade(rev);
-  // reverse back
-  const out=new Float64Array(n);
-  for(let i=0;i<n;i++)out[i]=y[n-1-i];
+  let y=biquad(x);
+  const rev=new Float64Array(n);for(let i=0;i<n;i++)rev[i]=y[n-1-i];
+  y=biquad(rev);
+  const out=new Float64Array(n);for(let i=0;i<n;i++)out[i]=y[n-1-i];
   return out;
 }
 
@@ -212,11 +180,17 @@ function peakFreq(sig,fs,lo,hi){
   const res=fs/N;
   const iLo=Math.max(1,Math.ceil(lo/res));
   const iHi=Math.min(N/2-1,Math.floor(hi/res));
-  if(iLo>=iHi)return{bpm:NaN,mag:0};
-  let pk=iLo;
-  for(let i=iLo+1;i<=iHi;i++){
-    if(re[i]*re[i]+im[i]*im[i]>re[pk]*re[pk]+im[pk]*im[pk])pk=i;
+  if(iLo>=iHi)return{bpm:NaN,snr:0};
+  const powers=[];
+  let pk=iLo,pkPow=re[iLo]*re[iLo]+im[iLo]*im[iLo];
+  for(let i=iLo;i<=iHi;i++){
+    const p=re[i]*re[i]+im[i]*im[i];
+    powers.push(p);
+    if(p>pkPow){pkPow=p;pk=i;}
   }
+  powers.sort((a,b)=>a-b);
+  const medianPow=powers[Math.floor(powers.length/2)];
+  const snr=medianPow>0?pkPow/medianPow:0;
   function goertzel(f){
     const w=2*Math.PI*f/fs,coeff=2*Math.cos(w);
     let s0=0,s1=0,s2=0;
@@ -228,8 +202,27 @@ function peakFreq(sig,fs,lo,hi){
     const m1=fl+(fh-fl)/3,m2=fh-(fh-fl)/3;
     if(goertzel(m1)>goertzel(m2))fh=m2;else fl=m1;
   }
-  const fPeak=(fl+fh)/2;
-  return{bpm:fPeak*60,mag:Math.sqrt(re[pk]*re[pk]+im[pk]*im[pk])};
+  let bpm=((fl+fh)/2)*60;
+
+  // Harmonic check: if 2nd harmonic was detected, autocorrelation at
+  // half-lag will be stronger than at the detected lag
+  if(bpm>100){
+    const n=sig.length;
+    const lagFull=Math.round(fs*60/bpm);
+    const lagHalf=Math.round(fs*60/(bpm/2));
+    if(lagHalf<n){
+      let acFull=0,acHalf=0,var_=0;
+      let m=0;for(let i=0;i<n;i++)m+=sig[i];m/=n;
+      for(let i=0;i<n;i++)var_+=(sig[i]-m)**2;
+      if(var_>0){
+        for(let i=0;i<n-lagFull;i++) acFull+=(sig[i]-m)*(sig[i+lagFull]-m);
+        for(let i=0;i<n-lagHalf;i++) acHalf+=(sig[i]-m)*(sig[i+lagHalf]-m);
+        acFull/=var_; acHalf/=var_;
+        if(acHalf>acFull*1.1) bpm/=2;
+      }
+    }
+  }
+  return{bpm, snr};
 }
 
 function drawWave(filt){
@@ -257,15 +250,14 @@ function foreheadMask(lm,w,h){
   const yBrow=(lm[105].y+lm[334].y)/2*h;
   const yChin=lm[152].y*h;
   const fh=Math.max(1,yChin-yBrow)*.55;
-  const topY=yBrow-fh*.53,botY=yBrow-fh*.15;
+  const topY=yBrow-fh*.50,botY=yBrow-fh*.20;
   const cx=(xMin+xMax)/2;
   return[
-    {x:cx-fw*.36,y:topY},{x:cx+fw*.36,y:topY},
-    {x:cx+fw*.36,y:botY},{x:cx-fw*.36,y:botY}
+    {x:cx-fw*.30,y:topY},{x:cx+fw*.30,y:topY},
+    {x:cx+fw*.30,y:botY},{x:cx-fw*.30,y:botY}
   ];
 }
 
-// Extract RGB with YCrCb skin filtering — matches baseline skin detection
 function extractRGB(img,poly,w,h){
   const d=img.data;
   const xs=poly.map(p=>Math.round(p.x)),ys=poly.map(p=>Math.round(p.y));
@@ -276,24 +268,23 @@ function extractRGB(img,poly,w,h){
   let sr=0,sg=0,sb=0,cnt=0;
   for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
     if(((x-ccx)**2)/rx2+((y-ccy)**2)/ry2>1)continue;
-    const i=(y*w+x)*4;
-    const R=d[i],G=d[i+1],B=d[i+2];
-    // BGR->YCrCb (OpenCV-compatible): Cr = 128 + 0.5*R - 0.4187*G - 0.0813*B
-    //                                 Cb = 128 - 0.1687*R - 0.3313*G + 0.5*B
-    const Cr=128+0.5*R-0.4187*G-0.0813*B;
-    const Cb=128-0.1687*R-0.3313*G+0.5*B;
-    // skin range: Cr in [133,173], Cb in [77,127]
-    if(Cr<133||Cr>173||Cb<77||Cb>127)continue;
-    sr+=R;sg+=G;sb+=B;cnt++;
+    const i=(y*w+x)*4;sr+=d[i];sg+=d[i+1];sb+=d[i+2];cnt++;
   }
   if(!cnt)return{r:0,g:0,b:0};
   return{r:sr/cnt,g:sg/cnt,b:sb/cnt};
 }
 
-async function processFrame(){
-  if(!landmarker||!video.videoWidth){requestAnimationFrame(processFrame);return}
+function medianArr(arr){
+  const s=arr.slice().sort((a,b)=>a-b);
+  const m=s.length>>1;
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;
+}
+
+function processFrame(info){
+  if(!landmarker)return;
   try{
     const W=video.videoWidth,H=video.videoHeight;
+    if(!W){video.requestVideoFrameCallback(processFrame);return}
     if(display.width!==W){display.width=W;display.height=H;ext.width=W;ext.height=H}
 
     ctx.setTransform(-1,0,0,1,W,0);
@@ -302,23 +293,20 @@ async function processFrame(){
 
     ectx.drawImage(video,0,0,W,H);
     const ts=performance.now();
-    if(ts===lastTs){requestAnimationFrame(processFrame);return}
-    lastTs=ts;
 
-    // FPS measurement
-    if(prevFrameTs!==null){
-      const dt=(ts-prevFrameTs)/1000;
-      fpsBuf.push(1/dt);
-      if(fpsBuf.length>120)fpsBuf.shift();
-      measuredFs=fpsBuf.reduce((a,b)=>a+b,0)/fpsBuf.length;
+    // FPS from real video frame timestamps
+    const vts=info.mediaTime;
+    if(prevVts!==null){
+      const dt=vts-prevVts;
+      if(dt>0) fpsEma=fpsEma*0.95+(1/dt)*0.05;
     }
-    prevFrameTs=ts;
+    prevVts=vts;
 
     const res=landmarker.detectForVideo(ext,ts);
 
     if(!res.faceLandmarks||!res.faceLandmarks.length){
       statusEl.textContent="no face — look at camera";
-      requestAnimationFrame(processFrame);return;
+      video.requestVideoFrameCallback(processFrame);return;
     }
 
     const lm=res.faceLandmarks[0];
@@ -331,36 +319,45 @@ async function processFrame(){
 
     const rgb=extractRGB(ectx.getImageData(0,0,W,H),mask,W,H);
     rawBuf.push([rgb.r,rgb.g,rgb.b]);
+    if(rawBuf.length>WIN*2) rawBuf.splice(0,rawBuf.length-WIN);
+    totalFrames++;
 
-    // Recalculate every 30 frames (≈1s at 30fps)
-    if(++frameCnt>=30){
-      frameCnt=0;
-      const win=Math.round(measuredFs*WIN_SEC);
+    statusEl.textContent=`collecting… ${(totalFrames%WIN)+1}/${WIN} (${fpsEma.toFixed(1)} fps)`;
+
+    // Compute HR every 30 new frames once buffer is full
+    if(rawBuf.length>=WIN && rawBuf.length%30<2){
       const R=[],G=[],B=[];
-      for(let i=0;i<rawBuf.length;i++){
+      const start=Math.max(0,rawBuf.length-WIN);
+      for(let i=start;i<rawBuf.length;i++){
         R.push(rawBuf[i][0]);G.push(rawBuf[i][1]);B.push(rawBuf[i][2]);
       }
-      if(rawBuf.length>win*2)rawBuf.splice(0,rawBuf.length-win);
 
-      statusEl.textContent=`measuring… (${measuredFs.toFixed(1)} fps)`;
+      // Green channel variance — quick signal quality check
+      let gMean=0;for(const v of G)gMean+=v;gMean/=G.length;
+      let gVar=0;for(const v of G)gVar+=(v-gMean)**2;gVar/=G.length;
+      const gCv=gMean>0?Math.sqrt(gVar)/gMean:0;
 
-      if(R.length>=win){
-        const pulse=posOverlapAdd(R,G,B,measuredFs,WIN_SEC);
-        const tail=pulse.slice(-win);
-        const d=detrend(tail);
-        const f=butterBpf(d,HR_LOW,HR_HIGH,measuredFs);
-        const r=peakFreq(f,measuredFs,HR_LOW,HR_HIGH);
-        if(isFinite(r.bpm)&&r.bpm>=42&&r.bpm<=240){
-          const bpm=Math.round(r.bpm);
-          hrValue.textContent=bpm;
-          statusEl.textContent=`heart rate: ${bpm} bpm (${measuredFs.toFixed(1)} fps)`;
-          drawWave(f);
-          if(firstHr){firstHr=false;beep()}
-        }
+      const pulse=posSignal(R,G,B,WIN);
+      const tail=pulse.slice(-WIN);
+      const d=detrend(tail);
+      const f=butterBpf(d,HR_LOW,HR_HIGH,FS);
+      const {bpm,snr}=peakFreq(f,FS,HR_LOW,HR_HIGH);
+
+      drawWave(f);
+
+      if(isFinite(bpm)&&bpm>=42&&bpm<=200&&snr>3){
+        hrHistory.push(bpm);
+        if(hrHistory.length>15) hrHistory.shift();
+        const stable=Math.round(medianArr(hrHistory));
+        hrValue.textContent=stable;
+        statusEl.textContent=`heart rate: ${stable} bpm  (snr:${snr.toFixed(0)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
+        if(firstHr){firstHr=false;beep()}
+      }else{
+        statusEl.textContent=`waiting… (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
       }
     }
   }catch(e){console.warn("frame error:",e)}
-  requestAnimationFrame(processFrame);
+  video.requestVideoFrameCallback(processFrame);
 }
 
 async function start(){
@@ -376,11 +373,11 @@ async function start(){
       runningMode:"VIDEO",numFaces:1
     });
     const stream=await navigator.mediaDevices.getUserMedia(
-      {video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}});
+      {video:{facingMode:"user",width:{ideal:640},height:{ideal:480},frameRate:{ideal:30}}});
     video.srcObject=stream;await video.play();
     overlay.classList.add("hidden");
-    statusEl.textContent="face detected — measuring…";
-    processFrame();
+    statusEl.textContent="face detected — collecting frames…";
+    video.requestVideoFrameCallback(processFrame);
   }catch(e){
     overlay.classList.remove("hidden");
     startBtn.textContent="Start";startBtn.disabled=false;
