@@ -23,6 +23,7 @@ html,body{width:100%;height:100%;background:#0a0a0a;color:#fff;
 #hr-value{font-size:72px;font-weight:700;color:#00ff88;line-height:1;letter-spacing:-2px}
 #hr-unit{font-size:20px;color:#666}
 #status{height:18px;margin-top:8px;font-size:14px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#detail{height:18px;margin-top:4px;font-size:13px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #hr-value.stale{color:#ffcc00}
 #waveform{width:100%;height:80px;margin-top:10px;background:#0a0a0a;border-radius:8px}
 .quality{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
@@ -50,6 +51,7 @@ html,body{width:100%;height:100%;background:#0a0a0a;color:#fff;
       <span id="hr-unit">bpm</span>
     </div>
     <div id="status">click Start to begin</div>
+    <div id="detail"></div>
     <div class="quality">
       <span class="pill" id="face-pill">face</span>
       <span class="pill" id="light-pill">light</span>
@@ -71,6 +73,7 @@ const overlay   = document.getElementById("overlay");
 const startBtn  = document.getElementById("start-btn");
 const hrValue   = document.getElementById("hr-value");
 const statusEl  = document.getElementById("status");
+const detailEl  = document.getElementById("detail");
 const waveCvs   = document.getElementById("waveform");
 const facePill   = document.getElementById("face-pill");
 const lightPill  = document.getElementById("light-pill");
@@ -391,6 +394,11 @@ function showFreshBpm(bpm){
   hrValue.classList.remove("stale");
 }
 
+function setDetail(text,state=""){
+  detailEl.textContent=text;
+  detailEl.style.color=state==="warn"?"#ffcc00":state==="ok"?"#00ff88":"#999";
+}
+
 function drawFaceGuide(W,H,quality,msg){
   const size=Math.min(W,H)*0.46;
   const x=(W-size)/2,y=(H-size*1.18)/2;
@@ -533,6 +541,7 @@ function processFrame(info){
       statusEl.textContent=isFinite(lastDisplayedBpm)
         ?"no face — last value may be outdated"
         :"no face — look at camera";
+      setDetail("");
       setPill(facePill,"no face","bad");
       setPill(lightPill,"light","warn");
       setPill(fpsPill,`${fpsEma.toFixed(1)} fps`,fpsEma>=27?"ok":fpsEma>=22?"warn":"bad");
@@ -571,6 +580,7 @@ function processFrame(info){
       pendingBpm=NaN;
       smoothMask=null;
       markBpmStale();
+      setDetail(isFinite(lastDisplayedBpm)?"last value is stale; waiting for stable signal":"");
     }
     totalFrames++;
 
@@ -638,6 +648,7 @@ function processFrame(info){
         pendingBpm=NaN;
         showFreshBpm(stable);
         statusEl.textContent=`heart rate: ${stable} bpm  (pos:${Math.round(pos.bpm)} chrom:${isFinite(chromPeak.bpm)?Math.round(chromPeak.bpm):"--"} snr:${snr.toFixed(1)})`;
+        setDetail(`accepted: POS ${Math.round(pos.bpm)} bpm, CHROM ${isFinite(chromPeak.bpm)?Math.round(chromPeak.bpm)+" bpm":"weak"}`,"ok");
         setPill(signalPill,`snr ${snr.toFixed(1)}`,"ok");
         if(firstHr){firstHr=false;beep()}
       }else{
@@ -651,13 +662,18 @@ function processFrame(info){
           const battle=posBattle||`${Math.round(pos.bpm)} vs ${Math.round(pos.bpm/2)} bpm`;
           const chromText=isFinite(chromPeak.bpm)?`pos ${battle}, chrom ${Math.round(chromPeak.bpm)} bpm`:`pos ${battle}`;
           reason=`ambiguous: ${chromText}`;
+          setDetail(`ambiguous candidates: ${chromText}`,"warn");
           signalLabel="ambiguous";
         }else if(firstNeedsConfirm&&!pendingOk&&isFinite(bpm)){
           reason=`confirming ${Math.round(bpm)} bpm`;
+          setDetail(`confirming candidate: ${Math.round(bpm)} bpm; waiting for next window`,"warn");
           signalLabel="confirming";
         }else if(!ensembleOk&&isFinite(chromPeak.bpm)){
           reason=`POS/CHROM disagree: ${Math.round(pos.bpm)} vs ${Math.round(chromPeak.bpm)} bpm`;
+          setDetail(`POS/CHROM disagree: ${Math.round(pos.bpm)} vs ${Math.round(chromPeak.bpm)} bpm`,"warn");
           signalLabel="disagree";
+        }else{
+          setDetail(reason,"warn");
         }
         statusEl.textContent=`${reason}… (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
         setPill(signalPill,signalLabel,"warn");
