@@ -23,6 +23,7 @@ html,body{width:100%;height:100%;background:#0a0a0a;color:#fff;
 #hr-value{font-size:72px;font-weight:700;color:#00ff88;line-height:1;letter-spacing:-2px}
 #hr-unit{font-size:20px;color:#666}
 #status{margin-top:8px;font-size:14px;color:#666}
+#hr-value.stale{color:#ffcc00}
 #waveform{width:100%;height:80px;margin-top:10px;background:#0a0a0a;border-radius:8px}
 .quality{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .pill{font-size:12px;line-height:1;padding:7px 9px;border-radius:999px;background:#1b1b1b;color:#777}
@@ -99,6 +100,7 @@ let totalFrames = 0;
 let lastAnalysisAt = 0;
 let lastFaceCenter = null;
 let lastGoodBpm = NaN;
+let lastDisplayedBpm = NaN;
 
 const ext = document.createElement("canvas");
 const ectx = ext.getContext("2d", {willReadFrequently:true});
@@ -195,7 +197,7 @@ function fft(re,im){
   }
 }
 
-function peakFreq(sig,fs,lo,hi){
+function peakFreq(sig,fs,lo,hi,prevBpm=NaN){
   const N=1<<Math.ceil(Math.log2(sig.length));
   const re=new Float64Array(N),im=new Float64Array(N);
   for(let i=0;i<sig.length;i++){
@@ -208,47 +210,88 @@ function peakFreq(sig,fs,lo,hi){
   const iHi=Math.min(N/2-1,Math.floor(hi/res));
   if(iLo>=iHi)return{bpm:NaN,snr:0};
   const powers=[];
-  let pk=iLo,pkPow=re[iLo]*re[iLo]+im[iLo]*im[iLo];
   for(let i=iLo;i<=iHi;i++){
     const p=re[i]*re[i]+im[i]*im[i];
     powers.push(p);
-    if(p>pkPow){pkPow=p;pk=i;}
   }
-  powers.sort((a,b)=>a-b);
-  const medianPow=powers[Math.floor(powers.length/2)];
-  const snr=medianPow>0?pkPow/medianPow:0;
+  const sortedPowers=powers.slice().sort((a,b)=>a-b);
+  const medianPow=sortedPowers[Math.floor(sortedPowers.length/2)]||1e-12;
   function goertzel(f){
     const w=2*Math.PI*f/fs,coeff=2*Math.cos(w);
     let s0=0,s1=0,s2=0;
     for(let i=0;i<sig.length;i++){s0=sig[i]+coeff*s1-s2;s2=s1;s1=s0}
     return s1*s1+s2*s2-coeff*s1*s2;
   }
-  let fl=(pk-1)*res,fh=(pk+1)*res;
-  for(let k=0;k<10;k++){
-    const m1=fl+(fh-fl)/3,m2=fh-(fh-fl)/3;
-    if(goertzel(m1)>goertzel(m2))fh=m2;else fl=m1;
-  }
-  let bpm=((fl+fh)/2)*60;
 
-  // Harmonic check: if 2nd harmonic was detected, autocorrelation at
-  // half-lag will be stronger than at the detected lag
-  if(bpm>100){
+  function normAutocorr(testBpm){
     const n=sig.length;
-    const lagFull=Math.round(fs*60/bpm);
-    const lagHalf=Math.round(fs*60/(bpm/2));
-    if(lagHalf<n){
-      let acFull=0,acHalf=0,var_=0;
-      let m=0;for(let i=0;i<n;i++)m+=sig[i];m/=n;
-      for(let i=0;i<n;i++)var_+=(sig[i]-m)**2;
-      if(var_>0){
-        for(let i=0;i<n-lagFull;i++) acFull+=(sig[i]-m)*(sig[i+lagFull]-m);
-        for(let i=0;i<n-lagHalf;i++) acHalf+=(sig[i]-m)*(sig[i+lagHalf]-m);
-        acFull/=var_; acHalf/=var_;
-        if(acHalf>acFull*1.1) bpm/=2;
-      }
+    const lag=Math.round(fs*60/testBpm);
+    if(lag<2||lag>=n)return 0;
+    let ac=0,var_=0,m=0;
+    for(let i=0;i<n;i++)m+=sig[i];m/=n;
+    for(let i=0;i<n;i++)var_+=(sig[i]-m)**2;
+    if(var_<=0)return 0;
+    for(let i=0;i<n-lag;i++) ac+=(sig[i]-m)*(sig[i+lag]-m);
+    return ac/var_;
+  }
+
+  function refineBin(bin){
+    let fl=Math.max(lo,(bin-1)*res),fh=Math.min(hi,(bin+1)*res);
+    for(let k=0;k<12;k++){
+      const m1=fl+(fh-fl)/3,m2=fh-(fh-fl)/3;
+      if(goertzel(m1)>goertzel(m2))fh=m2;else fl=m1;
+    }
+    return (fl+fh)/2;
+  }
+
+  const peaks=[];
+  for(let i=iLo+1;i<iHi;i++){
+    const p=re[i]*re[i]+im[i]*im[i];
+    const pl=re[i-1]*re[i-1]+im[i-1]*im[i-1];
+    const pr=re[i+1]*re[i+1]+im[i+1]*im[i+1];
+    if(p>=pl&&p>=pr)peaks.push({bin:i,power:p});
+  }
+  if(!peaks.length){
+    for(let i=iLo;i<=iHi;i++)peaks.push({bin:i,power:re[i]*re[i]+im[i]*im[i]});
+  }
+  peaks.sort((a,b)=>b.power-a.power);
+
+  const byBpm=new Map();
+  function addCandidate(freq,source){
+    if(freq<lo||freq>hi)return;
+    const bpm=freq*60;
+    const key=Math.round(bpm);
+    const power=goertzel(freq);
+    const ac=normAutocorr(bpm);
+    const prevPenalty=isFinite(prevBpm)?Math.min(Math.abs(bpm-prevBpm)/35,2):0;
+    const score=Math.log(Math.max(power,1e-12)/medianPow)+2.5*Math.max(0,ac)-prevPenalty;
+    const cand={bpm,power,ac,score,source};
+    const old=byBpm.get(key);
+    if(!old||cand.score>old.score)byBpm.set(key,cand);
+  }
+
+  for(const p of peaks.slice(0,8)){
+    const f=refineBin(p.bin);
+    addCandidate(f,"peak");
+    addCandidate(f/2,"subharmonic");
+  }
+
+  const candidates=[...byBpm.values()];
+  for(const high of candidates){
+    if(high.bpm<95)continue;
+    const low=candidates.find(c=>Math.abs(c.bpm*2-high.bpm)<6);
+    if(!low)continue;
+    const lowSupport=low.ac>=high.ac*0.65||low.power>=high.power*0.22;
+    if(lowSupport){
+      high.score-=1.0;
+      low.score+=0.7;
     }
   }
-  return{bpm, snr};
+
+  candidates.sort((a,b)=>b.score-a.score);
+  const best=candidates[0];
+  if(!best)return{bpm:NaN,snr:0};
+  return{bpm:best.bpm, snr:best.power/medianPow};
 }
 
 function resampleUniform(samples, fs, seconds){
@@ -275,6 +318,22 @@ function resampleUniform(samples, fs, seconds){
 function setPill(el,label,state){
   el.textContent=label;
   el.className=`pill ${state}`;
+}
+
+function markBpmStale(){
+  if(isFinite(lastDisplayedBpm)){
+    hrValue.textContent=Math.round(lastDisplayedBpm);
+    hrValue.classList.add("stale");
+  }else{
+    hrValue.textContent="--";
+    hrValue.classList.remove("stale");
+  }
+}
+
+function showFreshBpm(bpm){
+  lastDisplayedBpm=bpm;
+  hrValue.textContent=Math.round(bpm);
+  hrValue.classList.remove("stale");
 }
 
 function drawFaceGuide(W,H,quality,msg){
@@ -410,8 +469,10 @@ function processFrame(info){
     const res=landmarker.detectForVideo(ext,ts);
 
     if(!res.faceLandmarks||!res.faceLandmarks.length){
-      statusEl.textContent="no face — look at camera";
-      hrValue.textContent="--";
+      markBpmStale();
+      statusEl.textContent=isFinite(lastDisplayedBpm)
+        ?"no face — last value may be outdated"
+        :"no face — look at camera";
       setPill(facePill,"no face","bad");
       setPill(lightPill,"light","warn");
       setPill(fpsPill,`${fpsEma.toFixed(1)} fps`,fpsEma>=27?"ok":fpsEma>=22?"warn":"bad");
@@ -446,7 +507,7 @@ function processFrame(info){
     }else{
       rawBuf=[];
       hrHistory=[];
-      hrValue.textContent="--";
+      markBpmStale();
       lastGoodBpm=NaN;
     }
     totalFrames++;
@@ -458,7 +519,9 @@ function processFrame(info){
     const bufferedSec=rawBuf.length>1?rawBuf[rawBuf.length-1].t-rawBuf[0].t:0;
     statusEl.textContent=frameQuality.ok
       ?`collecting stable frames… ${Math.min(WIN_SEC,bufferedSec).toFixed(1)}/${WIN_SEC}s`
-      :`${frameQuality.faceMsg}; ${frameQuality.lightMsg}`;
+      :isFinite(lastDisplayedBpm)
+        ?`${frameQuality.faceMsg}; ${frameQuality.lightMsg} — last value may be outdated`
+        :`${frameQuality.faceMsg}; ${frameQuality.lightMsg}`;
     setPill(signalPill,bufferedSec>=MIN_GOOD_SEC?"ready":"collecting",bufferedSec>=MIN_GOOD_SEC?"ok":"warn");
 
     // Compute HR roughly once per second once enough clean time is buffered.
@@ -475,7 +538,7 @@ function processFrame(info){
       const pulse=posSignal(R,G,B,POS_L);
       const d=detrend(pulse);
       const f=butterBpf(d,HR_LOW,HR_HIGH,FS);
-      const {bpm,snr}=peakFreq(f,FS,HR_LOW,HR_HIGH);
+      const {bpm,snr}=peakFreq(f,FS,HR_LOW,HR_HIGH,lastGoodBpm);
 
       drawWave(f);
 
@@ -485,7 +548,7 @@ function processFrame(info){
         if(hrHistory.length>15) hrHistory.shift();
         const stable=Math.round(medianArr(hrHistory));
         lastGoodBpm=stable;
-        hrValue.textContent=stable;
+        showFreshBpm(stable);
         statusEl.textContent=`heart rate: ${stable} bpm  (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
         setPill(signalPill,`snr ${snr.toFixed(1)}`,"ok");
         if(firstHr){firstHr=false;beep()}
