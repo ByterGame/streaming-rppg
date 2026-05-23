@@ -88,6 +88,7 @@ const POS_L   = Math.round(FS * POS_SEC);
 const HR_LOW  = 0.7;
 const HR_HIGH = 3.3;
 const MIN_GOOD_SEC = 8;
+const PRIOR_TTL_SEC = 45;
 
 let landmarker = null;
 let rawBuf     = [];
@@ -100,7 +101,10 @@ let totalFrames = 0;
 let lastAnalysisAt = 0;
 let lastFaceCenter = null;
 let lastGoodBpm = NaN;
+let lastGoodAt = 0;
 let lastDisplayedBpm = NaN;
+let pendingBpm = NaN;
+let pendingAt = 0;
 
 const ext = document.createElement("canvas");
 const ectx = ext.getContext("2d", {willReadFrequently:true});
@@ -142,6 +146,31 @@ function posSignal(R,G,B,L){
   }
   for(let i=0;i<n;i++) if(Wsum[i]>0) H[i]/=Wsum[i];
   return H;
+}
+
+function chromSignal(R,G,B){
+  const n=R.length;
+  const out=new Float64Array(n);
+  if(n<2)return out;
+  let mR=0,mG=0,mB=0;
+  for(let i=0;i<n;i++){mR+=R[i];mG+=G[i];mB+=B[i]}
+  mR/=n;mG/=n;mB/=n;
+  if(mR===0)mR=1;if(mG===0)mG=1;if(mB===0)mB=1;
+  const X=new Float64Array(n),Y=new Float64Array(n);
+  let mx=0,my=0;
+  for(let i=0;i<n;i++){
+    const rn=R[i]/mR,gn=G[i]/mG,bn=B[i]/mB;
+    X[i]=3*rn-2*gn;
+    Y[i]=1.5*rn+gn-1.5*bn;
+    mx+=X[i];my+=Y[i];
+  }
+  mx/=n;my/=n;
+  let sx=0,sy=0;
+  for(let i=0;i<n;i++){sx+=(X[i]-mx)**2;sy+=(Y[i]-my)**2}
+  sx=Math.sqrt(sx/n);sy=Math.sqrt(sy/n);
+  const alpha=sy>0?sx/sy:0;
+  for(let i=0;i<n;i++)out[i]=X[i]-alpha*Y[i];
+  return out;
 }
 
 function detrend(x){
@@ -291,7 +320,19 @@ function peakFreq(sig,fs,lo,hi,prevBpm=NaN){
   candidates.sort((a,b)=>b.score-a.score);
   const best=candidates[0];
   if(!best)return{bpm:NaN,snr:0};
-  return{bpm:best.bpm, snr:best.power/medianPow};
+  const rival=candidates.find(c=>c!==best && (
+    Math.abs(c.bpm*2-best.bpm)<6 ||
+    Math.abs(c.bpm-best.bpm*2)<6 ||
+    Math.abs(c.bpm-best.bpm)<12
+  ));
+  const ambiguous=!!rival && rival.score>best.score-1.15;
+  return{
+    bpm:best.bpm,
+    snr:best.power/medianPow,
+    candidates:candidates.slice(0,4),
+    ambiguous,
+    rivalBpm:rival?rival.bpm:NaN
+  };
 }
 
 function resampleUniform(samples, fs, seconds){
@@ -479,7 +520,7 @@ function processFrame(info){
       setPill(signalPill,"signal","bad");
       drawFaceGuide(W,H,"bad","look at camera");
       lastFaceCenter=null;
-      lastGoodBpm=NaN;
+      pendingBpm=NaN;
       video.requestVideoFrameCallback(processFrame);return;
     }
 
@@ -507,8 +548,8 @@ function processFrame(info){
     }else{
       rawBuf=[];
       hrHistory=[];
+      pendingBpm=NaN;
       markBpmStale();
-      lastGoodBpm=NaN;
     }
     totalFrames++;
 
@@ -538,22 +579,59 @@ function processFrame(info){
       const pulse=posSignal(R,G,B,POS_L);
       const d=detrend(pulse);
       const f=butterBpf(d,HR_LOW,HR_HIGH,FS);
-      const {bpm,snr}=peakFreq(f,FS,HR_LOW,HR_HIGH,lastGoodBpm);
+      const recentPrior=sampleTime-lastGoodAt<PRIOR_TTL_SEC?lastGoodBpm:NaN;
+      const pos=peakFreq(f,FS,HR_LOW,HR_HIGH,recentPrior);
+
+      const chrom=chromSignal(R,G,B);
+      const chromD=detrend(chrom);
+      const chromF=butterBpf(chromD,HR_LOW,HR_HIGH,FS);
+      const chromPeak=peakFreq(chromF,FS,HR_LOW,HR_HIGH,recentPrior);
+      let bpm=pos.bpm,snr=pos.snr;
+
+      const chromReliable=isFinite(chromPeak.bpm)&&chromPeak.snr>=4;
+      const chromSupports=chromReliable && Math.abs(chromPeak.bpm-bpm)<=12;
+      const chromSupportsHalf=chromReliable && (
+        Math.abs(chromPeak.bpm*2-bpm)<=10 ||
+        Math.abs(chromPeak.bpm-bpm*2)<=10
+      );
+      const posBattle=pos.ambiguous&&isFinite(pos.rivalBpm)
+        ?`${Math.round(pos.bpm)} vs ${Math.round(pos.rivalBpm)} bpm`
+        :"";
 
       drawWave(f);
 
       const jumpOk=!isFinite(lastGoodBpm)||Math.abs(bpm-lastGoodBpm)<28||hrHistory.length<3;
-      if(isFinite(bpm)&&bpm>=42&&bpm<=198&&snr>5&&gCv>0.001&&gCv<0.08&&jumpOk){
+      const firstNeedsConfirm=!isFinite(recentPrior);
+      const pendingOk=isFinite(pendingBpm)&&Math.abs(bpm-pendingBpm)<=10&&sampleTime-pendingAt<18;
+      const ambiguous=pos.ambiguous || (chromSupportsHalf && !isFinite(recentPrior));
+      const ensembleOk=chromSupports || !chromReliable || snr>chromPeak.snr*1.7;
+      const canAccept=(!firstNeedsConfirm||pendingOk) && !ambiguous && ensembleOk;
+
+      if(isFinite(bpm)&&bpm>=42&&bpm<=198&&snr>5&&gCv>0.001&&gCv<0.08&&jumpOk&&canAccept){
         hrHistory.push(bpm);
         if(hrHistory.length>15) hrHistory.shift();
         const stable=Math.round(medianArr(hrHistory));
         lastGoodBpm=stable;
+        lastGoodAt=sampleTime;
+        pendingBpm=NaN;
         showFreshBpm(stable);
-        statusEl.textContent=`heart rate: ${stable} bpm  (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
+        statusEl.textContent=`heart rate: ${stable} bpm  (pos:${Math.round(pos.bpm)} chrom:${isFinite(chromPeak.bpm)?Math.round(chromPeak.bpm):"--"} snr:${snr.toFixed(1)})`;
         setPill(signalPill,`snr ${snr.toFixed(1)}`,"ok");
         if(firstHr){firstHr=false;beep()}
       }else{
-        const reason=!jumpOk?"unstable":snr<=5?"low signal":"waiting";
+        if(firstNeedsConfirm&&isFinite(bpm)&&!ambiguous&&ensembleOk){
+          pendingBpm=bpm;
+          pendingAt=sampleTime;
+        }
+        let reason=!jumpOk?"unstable":snr<=5?"low signal":"waiting";
+        if(ambiguous){
+          const chromText=isFinite(chromPeak.bpm)?`pos ${posBattle||Math.round(pos.bpm)+" bpm"}, chrom ${Math.round(chromPeak.bpm)} bpm`:`pos ${posBattle}`;
+          reason=`ambiguous: ${chromText}`;
+        }else if(firstNeedsConfirm&&!pendingOk&&isFinite(bpm)){
+          reason=`confirming ${Math.round(bpm)} bpm`;
+        }else if(!ensembleOk&&isFinite(chromPeak.bpm)){
+          reason=`POS/CHROM disagree: ${Math.round(pos.bpm)} vs ${Math.round(chromPeak.bpm)} bpm`;
+        }
         statusEl.textContent=`${reason}… (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
         setPill(signalPill,reason,"warn");
       }
