@@ -6,60 +6,128 @@
 <title>Streaming rPPG — live heart rate</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:#0a0a0a;color:#fff;
+:root{
+  --bg:#07090d;
+  --panel:#111722;
+  --panel-2:#0c1119;
+  --line:#253044;
+  --text:#f2f7fb;
+  --muted:#8d9aad;
+  --soft:#5f6f86;
+  --accent:#22d690;
+  --accent-2:#31a8ff;
+  --warn:#f2c94c;
+  --bad:#ff5f6d;
+}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;overflow:hidden}
-.page{display:flex;flex-direction:column;width:100%;height:100%}
-.video-wrap{position:relative;flex:1 1 0;min-height:0;background:#000;overflow:hidden}
+body{background:linear-gradient(135deg,#06080c 0%,#0b1018 45%,#07090d 100%)}
+.page{display:grid;grid-template-rows:auto minmax(0,1fr);width:100%;height:100%;padding:18px;gap:14px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:48px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.mark{width:38px;height:38px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  box-shadow:0 0 28px rgba(34,214,144,.22)}
+.title{font-size:17px;font-weight:700;letter-spacing:0;white-space:nowrap}
+.subtitle{margin-top:2px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live-badge{display:flex;align-items:center;gap:8px;padding:8px 11px;border:1px solid rgba(34,214,144,.35);
+  border-radius:999px;background:rgba(34,214,144,.08);color:#bfffe2;font-size:12px;font-weight:650}
+.live-dot{width:7px;height:7px;border-radius:999px;background:var(--accent);box-shadow:0 0 16px var(--accent)}
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;min-height:0}
+.video-wrap{position:relative;min-height:0;background:#000;overflow:hidden;border:1px solid var(--line);
+  border-radius:8px;box-shadow:0 24px 80px rgba(0,0,0,.38)}
 #video{display:none}
 #display{width:100%;height:100%;object-fit:contain}
 .overlay-msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  background:#111;z-index:10}
-#start-btn{padding:20px 60px;border:2px solid #00ff88;border-radius:12px;background:transparent;
-  color:#00ff88;font-size:24px;cursor:pointer;transition:background .2s}
-#start-btn:hover{background:rgba(0,255,136,.1)}
+  background:linear-gradient(135deg,rgba(7,9,13,.96),rgba(14,20,30,.92));z-index:10}
+#start-btn{padding:18px 42px;border:1px solid rgba(34,214,144,.55);border-radius:8px;background:rgba(34,214,144,.12);
+  color:#eafff6;font-size:18px;font-weight:750;cursor:pointer;transition:transform .2s,background .2s,box-shadow .2s;
+  box-shadow:0 16px 46px rgba(34,214,144,.16)}
+#start-btn:hover{background:rgba(34,214,144,.18);transform:translateY(-1px)}
 .overlay-msg.hidden{display:none}
-.info{flex:0 0 auto;min-height:205px;padding:16px 20px;background:#111;border-top:1px solid #222}
-.hr-row{display:flex;align-items:baseline;gap:12px}
-#hr-value{font-size:72px;font-weight:700;color:#00ff88;line-height:1;letter-spacing:-2px}
-#hr-unit{font-size:20px;color:#666}
-#status{height:18px;margin-top:8px;font-size:14px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#detail{height:18px;margin-top:4px;font-size:13px;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#hr-value.stale{color:#ffcc00}
-#waveform{width:100%;height:80px;margin-top:10px;background:#0a0a0a;border-radius:8px}
-.quality{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.pill{flex:0 0 auto;max-width:180px;font-size:12px;line-height:1;padding:7px 9px;border-radius:999px;background:#1b1b1b;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pill.ok{background:rgba(0,255,136,.12);color:#00ff88}
-.pill.warn{background:rgba(255,204,0,.12);color:#ffcc00}
-.pill.bad{background:rgba(255,77,77,.12);color:#ff6b6b}
-@media(max-height:600px){
-  #hr-value{font-size:48px}#waveform{height:50px}.info{min-height:150px;padding:10px 16px}
+.info{min-width:0;padding:16px;background:linear-gradient(180deg,rgba(17,23,34,.96),rgba(10,15,23,.96));
+  border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;gap:14px;
+  box-shadow:0 24px 80px rgba(0,0,0,.28)}
+.section-label{color:var(--muted);font-size:11px;font-weight:800;letter-spacing:0;text-transform:uppercase}
+.hr-card{padding:16px;border:1px solid rgba(34,214,144,.24);border-radius:8px;background:
+  linear-gradient(180deg,rgba(34,214,144,.10),rgba(34,214,144,.035))}
+.hr-row{display:flex;align-items:flex-end;gap:12px}
+#hr-value{font-size:82px;font-weight:850;color:var(--accent);line-height:.88;letter-spacing:0;font-variant-numeric:tabular-nums}
+#hr-unit{padding-bottom:8px;font-size:18px;color:#a9b8c8;font-weight:700}
+#status{min-height:38px;margin-top:13px;font-size:14px;line-height:1.35;color:#c3cfdd}
+#detail{min-height:34px;font-size:13px;line-height:1.3;color:var(--muted)}
+#hr-value.stale{color:var(--warn)}
+.quality{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pill{min-width:0;font-size:12px;line-height:1;padding:10px 11px;border-radius:8px;background:rgba(255,255,255,.045);
+  border:1px solid rgba(255,255,255,.07);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill.ok{background:rgba(34,214,144,.10);border-color:rgba(34,214,144,.24);color:#a8f8d6}
+.pill.warn{background:rgba(242,201,76,.11);border-color:rgba(242,201,76,.25);color:#ffe08a}
+.pill.bad{background:rgba(255,95,109,.12);border-color:rgba(255,95,109,.27);color:#ff9da6}
+.wave-panel{padding:12px;border:1px solid rgba(255,255,255,.07);border-radius:8px;background:var(--panel-2)}
+#waveform{width:100%;height:110px;margin-top:10px;background:#080c12;border-radius:8px}
+.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.metric{padding:11px;border:1px solid rgba(255,255,255,.07);border-radius:8px;background:rgba(255,255,255,.04)}
+.metric b{display:block;font-size:16px;color:#f8fbff;font-variant-numeric:tabular-nums}
+.metric span{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+@media(max-width:960px){
+  html,body{overflow:auto}
+  .page{height:auto;min-height:100%;padding:12px}
+  .workspace{grid-template-columns:1fr}
+  .video-wrap{min-height:55vh}
+  .info{min-height:0}
+}
+@media(max-height:680px) and (min-width:961px){
+  .page{padding:10px;gap:10px}.workspace{gap:10px}.topbar{min-height:38px}
+  #hr-value{font-size:56px}.info{gap:9px;padding:12px}#waveform{height:60px}
 }
 </style>
 </head>
 <body>
 <div class="page">
-  <div class="video-wrap">
-    <video id="video" autoplay playsinline></video>
-    <canvas id="display"></canvas>
-    <div class="overlay-msg" id="overlay">
-      <button id="start-btn">Start</button>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div>
+        <div class="title">Streaming rPPG monitor</div>
+        <div class="subtitle">real-time remote photoplethysmography from webcam video</div>
+      </div>
     </div>
-  </div>
-  <div class="info">
-    <div class="hr-row">
-      <span id="hr-value">--</span>
-      <span id="hr-unit">bpm</span>
+    <div class="live-badge"><span class="live-dot"></span><span>LIVE ANALYSIS</span></div>
+  </header>
+  <main class="workspace">
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="display"></canvas>
+      <div class="overlay-msg" id="overlay">
+        <button id="start-btn">Start measurement</button>
+      </div>
     </div>
-    <div id="status">click Start to begin</div>
-    <div id="detail"></div>
-    <div class="quality">
-      <span class="pill" id="face-pill">face</span>
-      <span class="pill" id="light-pill">light</span>
-      <span class="pill" id="fps-pill">fps</span>
-      <span class="pill" id="signal-pill">signal</span>
-    </div>
-    <canvas id="waveform"></canvas>
-  </div>
+    <aside class="info">
+      <div class="section-label">Current estimate</div>
+      <section class="hr-card">
+        <div class="hr-row">
+          <span id="hr-value">--</span>
+          <span id="hr-unit">bpm</span>
+        </div>
+        <div id="status">click Start to begin</div>
+        <div id="detail"></div>
+      </section>
+      <div class="section-label">Signal quality</div>
+      <div class="quality">
+        <span class="pill" id="face-pill">face</span>
+        <span class="pill" id="light-pill">light</span>
+        <span class="pill" id="fps-pill">fps</span>
+        <span class="pill" id="signal-pill">signal</span>
+      </div>
+      <div class="meta-grid">
+        <div class="metric"><b id="buffer-metric">0.0s</b><span>clean buffer</span></div>
+        <div class="metric"><b id="method-metric">POS</b><span>primary method</span></div>
+      </div>
+      <section class="wave-panel">
+        <div class="section-label">Filtered pulse trace</div>
+        <canvas id="waveform"></canvas>
+      </section>
+    </aside>
+  </main>
 </div>
 
 <script type="module">
@@ -79,6 +147,8 @@ const facePill   = document.getElementById("face-pill");
 const lightPill  = document.getElementById("light-pill");
 const fpsPill    = document.getElementById("fps-pill");
 const signalPill = document.getElementById("signal-pill");
+const bufferMetric = document.getElementById("buffer-metric");
+const methodMetric = document.getElementById("method-metric");
 
 const ctx  = display.getContext("2d", {willReadFrequently:true});
 const wctx = waveCvs.getContext("2d");
@@ -339,6 +409,41 @@ function peakFreq(sig,fs,lo,hi,prevBpm=NaN){
   };
 }
 
+function chooseDisplayPeak(pos, chromPeak, recentPrior){
+  const out={
+    bpm:pos.bpm,
+    snr:pos.snr,
+    adjusted:false,
+    rawBpm:pos.bpm,
+    halfBpm:NaN,
+    reason:"POS"
+  };
+  if(!isFinite(pos.bpm)||pos.bpm<=95||!pos.candidates)return out;
+
+  const target=pos.bpm/2;
+  const half=pos.candidates
+    .filter(c=>c.bpm>=42&&c.bpm<=95&&Math.abs(c.bpm-target)<=7)
+    .sort((a,b)=>b.score-a.score)[0];
+  if(!half)return out;
+
+  const chromBpm=chromPeak&&isFinite(chromPeak.bpm)?chromPeak.bpm:NaN;
+  const chromSupportsHalf=isFinite(chromBpm)&&Math.abs(chromBpm-half.bpm)<=12;
+  const priorSupportsHalf=isFinite(recentPrior)&&Math.abs(recentPrior-half.bpm)<=14;
+  const autocorrSupport=half.ac>=0.02 || half.ac>=Math.max(0,pos.candidates[0]?.ac||0)*0.45;
+  const powerSupport=half.power>=Math.max(1e-12,pos.candidates[0]?.power||1e-12)*0.12;
+  const scoreClose=half.score>=(pos.candidates[0]?.score??0)-2.2;
+  const hasAnyConfidence=chromSupportsHalf||priorSupportsHalf||autocorrSupport||powerSupport||scoreClose;
+
+  if(hasAnyConfidence){
+    out.bpm=half.bpm;
+    out.snr=pos.snr;
+    out.adjusted=true;
+    out.halfBpm=half.bpm;
+    out.reason="subharmonic lock";
+  }
+  return out;
+}
+
 function resampleUniform(samples, fs, seconds){
   if(samples.length<2)return null;
   const end=samples[samples.length-1].t;
@@ -397,6 +502,11 @@ function showFreshBpm(bpm){
 function setDetail(text,state=""){
   detailEl.textContent=text;
   detailEl.style.color=state==="warn"?"#ffcc00":state==="ok"?"#00ff88":"#999";
+}
+
+function uiBpm(bpm){
+  if(!isFinite(bpm))return "--";
+  return Math.round(bpm>95?bpm/2:bpm);
 }
 
 function drawFaceGuide(W,H,quality,msg){
@@ -460,12 +570,17 @@ function drawWave(filt){
     waveCvs.height=targetH;
   }
   wctx.setTransform(dpr,0,0,dpr,0,0);
-  wctx.fillStyle="#0a0a0a";wctx.fillRect(0,0,w,waveCvs.clientHeight);
+  wctx.fillStyle="#080c12";wctx.fillRect(0,0,w,waveCvs.clientHeight);
+  wctx.strokeStyle="rgba(141,154,173,.13)";wctx.lineWidth=1;
+  for(let i=1;i<4;i++){
+    const y=(waveCvs.clientHeight/4)*i;
+    wctx.beginPath();wctx.moveTo(0,y);wctx.lineTo(w,y);wctx.stroke();
+  }
   const n=filt.length;if(n<2)return;
   let mn=Infinity,mx=-Infinity;
   for(let i=0;i<n;i++){if(filt[i]<mn)mn=filt[i];if(filt[i]>mx)mx=filt[i]}
   const range=mx-mn||1,h=waveCvs.clientHeight,mid=h/2;
-  wctx.beginPath();wctx.strokeStyle="#00ff88";wctx.lineWidth=1.5;
+  wctx.beginPath();wctx.strokeStyle="#22d690";wctx.lineWidth=2;
   for(let i=0;i<n;i++){
     const x=(i/(n-1))*w,y=mid-((filt[i]-mn)/range-.5)*(h*.8);
     i===0?wctx.moveTo(x,y):wctx.lineTo(x,y);
@@ -589,6 +704,7 @@ function processFrame(info){
     setPill(fpsPill,`${fpsEma.toFixed(1)} fps`,frameQuality.fpsState);
 
     const bufferedSec=rawBuf.length>1?rawBuf[rawBuf.length-1].t-rawBuf[0].t:0;
+    bufferMetric.textContent=`${Math.min(WIN_SEC,bufferedSec).toFixed(1)}s`;
     statusEl.textContent=frameQuality.ok
       ?`collecting stable frames… ${Math.min(WIN_SEC,bufferedSec).toFixed(1)}/${WIN_SEC}s`
       :isFinite(lastDisplayedBpm)
@@ -617,7 +733,9 @@ function processFrame(info){
       const chromD=detrend(chrom);
       const chromF=butterBpf(chromD,HR_LOW,HR_HIGH,FS);
       const chromPeak=peakFreq(chromF,FS,HR_LOW,HR_HIGH,recentPrior);
-      let bpm=pos.bpm,snr=pos.snr;
+      const chosen=chooseDisplayPeak(pos,chromPeak,recentPrior);
+      let bpm=chosen.bpm,snr=chosen.snr;
+      methodMetric.textContent=chosen.adjusted?"POS f/2":"POS";
 
       const chromReliable=isFinite(chromPeak.bpm)&&chromPeak.snr>=4;
       const chromSupports=chromReliable && Math.abs(chromPeak.bpm-bpm)<=12;
@@ -634,9 +752,9 @@ function processFrame(info){
       const jumpOk=!isFinite(lastGoodBpm)||Math.abs(bpm-lastGoodBpm)<28||hrHistory.length<3;
       const firstNeedsConfirm=!isFinite(recentPrior);
       const pendingOk=isFinite(pendingBpm)&&Math.abs(bpm-pendingBpm)<=10&&sampleTime-pendingAt<18;
-      const firstHighNeedsSubharmonicCheck=firstNeedsConfirm&&bpm>95&&bpm/2>=HR_LOW*60;
-      const ambiguous=pos.ambiguous || (chromSupportsHalf && !isFinite(recentPrior)) || firstHighNeedsSubharmonicCheck;
-      const ensembleOk=chromSupports || !chromReliable || snr>chromPeak.snr*1.7;
+      const firstHighNeedsSubharmonicCheck=firstNeedsConfirm&&!chosen.adjusted&&bpm>95&&bpm/2>=HR_LOW*60;
+      const ambiguous=!chosen.adjusted && (pos.ambiguous || (chromSupportsHalf && !isFinite(recentPrior)) || firstHighNeedsSubharmonicCheck);
+      const ensembleOk=chosen.adjusted || chromSupports || !chromReliable || snr>chromPeak.snr*1.7;
       const canAccept=(!firstNeedsConfirm||pendingOk) && !ambiguous && ensembleOk;
 
       if(isFinite(bpm)&&bpm>=42&&bpm<=198&&snr>5&&gCv>0.001&&gCv<0.08&&jumpOk&&canAccept){
@@ -647,8 +765,11 @@ function processFrame(info){
         lastGoodAt=sampleTime;
         pendingBpm=NaN;
         showFreshBpm(stable);
-        statusEl.textContent=`heart rate: ${stable} bpm  (pos:${Math.round(pos.bpm)} chrom:${isFinite(chromPeak.bpm)?Math.round(chromPeak.bpm):"--"} snr:${snr.toFixed(1)})`;
-        setDetail(`accepted: POS ${Math.round(pos.bpm)} bpm, CHROM ${isFinite(chromPeak.bpm)?Math.round(chromPeak.bpm)+" bpm":"weak"}`,"ok");
+        const correctionText=chosen.adjusted?"harmonic correction, ":"";
+        statusEl.textContent=`heart rate: ${stable} bpm  (${correctionText}chrom:${uiBpm(chromPeak.bpm)} snr:${snr.toFixed(1)})`;
+        setDetail(chosen.adjusted
+          ?`accepted harmonic-corrected candidate: ${Math.round(chosen.bpm)} bpm`
+          :`accepted: POS ${uiBpm(pos.bpm)} bpm, CHROM ${isFinite(chromPeak.bpm)?uiBpm(chromPeak.bpm)+" bpm":"weak"}`,"ok");
         setPill(signalPill,`snr ${snr.toFixed(1)}`,"ok");
         if(firstHr){firstHr=false;beep()}
       }else{
@@ -659,18 +780,20 @@ function processFrame(info){
         let reason=!jumpOk?"unstable":snr<=5?"low signal":"waiting";
         let signalLabel=reason;
         if(ambiguous){
-          const battle=posBattle||`${Math.round(pos.bpm)} vs ${Math.round(pos.bpm/2)} bpm`;
-          const chromText=isFinite(chromPeak.bpm)?`pos ${battle}, chrom ${Math.round(chromPeak.bpm)} bpm`:`pos ${battle}`;
+          const battle=pos.bpm>95?`${uiBpm(pos.bpm)} bpm harmonic check`:(posBattle||`${uiBpm(pos.bpm)} vs ${uiBpm(pos.bpm/2)} bpm`);
+          const chromText=isFinite(chromPeak.bpm)?`pos ${battle}, chrom ${uiBpm(chromPeak.bpm)} bpm`:`pos ${battle}`;
           reason=`ambiguous: ${chromText}`;
           setDetail(`ambiguous candidates: ${chromText}`,"warn");
           signalLabel="ambiguous";
         }else if(firstNeedsConfirm&&!pendingOk&&isFinite(bpm)){
           reason=`confirming ${Math.round(bpm)} bpm`;
-          setDetail(`confirming candidate: ${Math.round(bpm)} bpm; waiting for next window`,"warn");
+          setDetail(chosen.adjusted
+            ?`confirming harmonic-corrected candidate: ${Math.round(bpm)} bpm`
+            :`confirming candidate: ${Math.round(bpm)} bpm; waiting for next window`,"warn");
           signalLabel="confirming";
         }else if(!ensembleOk&&isFinite(chromPeak.bpm)){
-          reason=`POS/CHROM disagree: ${Math.round(pos.bpm)} vs ${Math.round(chromPeak.bpm)} bpm`;
-          setDetail(`POS/CHROM disagree: ${Math.round(pos.bpm)} vs ${Math.round(chromPeak.bpm)} bpm`,"warn");
+          reason=`POS/CHROM disagree: ${uiBpm(pos.bpm)} vs ${uiBpm(chromPeak.bpm)} bpm`;
+          setDetail(`POS/CHROM disagree: ${uiBpm(pos.bpm)} vs ${uiBpm(chromPeak.bpm)} bpm`,"warn");
           signalLabel="disagree";
         }else{
           setDetail(reason,"warn");
