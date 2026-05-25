@@ -4,7 +4,7 @@ import {
 import {
   FS, WIN_SEC, POS_L, HR_LOW, HR_HIGH, MIN_GOOD_SEC, PRIOR_TTL_SEC,
   posSignal, chromSignal, detrend, butterBpf, peakFreq, selectStableEstimate,
-  resampleUniform, medianArr, needsEstimateReview,
+  resampleUniform, medianArr, needsEstimateReview, normalizeDisplayEstimate,
 } from "./signal.js";
 import {createUi, uiBpm} from "./ui.js";
 
@@ -196,7 +196,7 @@ function processFrame(info){
       const keepAfter=sampleTime-(WIN_SEC+3);
       while(rawBuf.length && rawBuf[0].t<keepAfter)rawBuf.shift();
     }else{
-      rawBuf=[];hrHistory=[];pendingBpm=NaN;smoothMask=null;
+      rawBuf=[];hrHistory=[];pendingBpm=NaN;smoothMask=null;lastGoodBpm=NaN;lastGoodAt=0;
       ui.markBpmStale();
       setEstimateDetail();
     }
@@ -235,6 +235,7 @@ function processFrame(info){
       const chromPeak=peakFreq(chromF,FS,HR_LOW,HR_HIGH,recentPrior);
       const chosen=selectStableEstimate(pos,chromPeak,recentPrior);
       let bpm=chosen.bpm,snr=chosen.snr;
+      bpm=normalizeDisplayEstimate(bpm);
       elements.methodMetric.textContent="POS";
       setEstimateDetail(pos,chromPeak,snr);
 
@@ -256,7 +257,7 @@ function processFrame(info){
       const ensembleOk=chosen.stabilized || chromSupports || !chromReliable || snr>chromPeak.snr*1.7;
       const canAccept=(!firstNeedsConfirm||pendingOk) && !ambiguous && ensembleOk;
 
-      if(isFinite(bpm)&&bpm>=42&&bpm<=198&&snr>5&&gCv>0.001&&gCv<0.08&&jumpOk&&canAccept){
+      if(isFinite(bpm)&&bpm>=42&&bpm<=95&&snr>5&&gCv>0.001&&gCv<0.08&&jumpOk&&canAccept){
         hrHistory.push(bpm);
         if(hrHistory.length>15) hrHistory.shift();
         const stable=Math.round(medianArr(hrHistory));

@@ -13,6 +13,11 @@ export function needsEstimateReview(bpm){
   return isFinite(bpm)&&bpm>ESTIMATE_REVIEW_BPM;
 }
 
+export function normalizeDisplayEstimate(bpm){
+  if(!isFinite(bpm))return bpm;
+  return needsEstimateReview(bpm)?bpm*SECONDARY_SCALE:bpm;
+}
+
 export function posSignal(R,G,B,L){
   const n=R.length;if(n<L)return new Float64Array(n);
   const H=new Float64Array(n);
