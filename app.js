@@ -57,6 +57,13 @@ function beep(){
   o.start();o.stop(audioCtx.currentTime+.25);
 }
 
+function setEstimateDetail(pos=null, chromPeak=null, snr=NaN, state=""){
+  const posText=pos&&isFinite(pos.bpm)?`${uiBpm(pos.bpm)} bpm`:"--";
+  const chromText=chromPeak&&isFinite(chromPeak.bpm)?`${uiBpm(chromPeak.bpm)} bpm`:"--";
+  const snrText=isFinite(snr)?snr.toFixed(1):"--";
+  ui.setDetail(`POS ${posText} | CHROM ${chromText} | SNR ${snrText}`,state);
+}
+
 function smoothPoly(poly){
   if(!smoothMask||smoothMask.length!==poly.length){
     smoothMask=poly.map(p=>({x:p.x,y:p.y}));
@@ -158,7 +165,7 @@ function processFrame(info){
     if(!res.faceLandmarks||!res.faceLandmarks.length){
       ui.markBpmStale();
       elements.statusEl.textContent=ui.hasDisplayedBpm()?"no face - last value may be outdated":"no face - look at camera";
-      ui.setDetail("");
+      setEstimateDetail();
       ui.setPill(elements.facePill,"no face","bad");
       ui.setPill(elements.lightPill,"light","warn");
       ui.setPill(elements.fpsPill,`${fpsEma.toFixed(1)} fps`,fpsEma>=27?"ok":fpsEma>=22?"warn":"bad");
@@ -191,7 +198,7 @@ function processFrame(info){
     }else{
       rawBuf=[];hrHistory=[];pendingBpm=NaN;smoothMask=null;
       ui.markBpmStale();
-      ui.setDetail(ui.hasDisplayedBpm()?"last value is stale; waiting for stable signal":"");
+      setEstimateDetail();
     }
     totalFrames++;
 
@@ -229,6 +236,7 @@ function processFrame(info){
       const chosen=selectStableEstimate(pos,chromPeak,recentPrior);
       let bpm=chosen.bpm,snr=chosen.snr;
       elements.methodMetric.textContent="POS";
+      setEstimateDetail(pos,chromPeak,snr);
 
       const chromReliable=isFinite(chromPeak.bpm)&&chromPeak.snr>=4;
       const chromSupports=chromReliable && Math.abs(chromPeak.bpm-bpm)<=12;
@@ -255,9 +263,7 @@ function processFrame(info){
         lastGoodBpm=stable;lastGoodAt=sampleTime;pendingBpm=NaN;
         ui.showFreshBpm(stable);
         elements.statusEl.textContent=`heart rate: ${stable} bpm  (chrom:${uiBpm(chromPeak.bpm)} snr:${snr.toFixed(1)})`;
-        ui.setDetail(chosen.stabilized
-          ?`accepted stable estimate: ${Math.round(chosen.bpm)} bpm`
-          :`accepted: POS ${uiBpm(pos.bpm)} bpm, CHROM ${isFinite(chromPeak.bpm)?uiBpm(chromPeak.bpm)+" bpm":"weak"}`,"ok");
+        setEstimateDetail(pos,chromPeak,snr,"ok");
         ui.setPill(elements.signalPill,`snr ${snr.toFixed(1)}`,"ok");
         if(firstHr){firstHr=false;beep()}
       }else{
@@ -270,20 +276,18 @@ function processFrame(info){
           const battle=needsEstimateReview(pos.bpm)?`${uiBpm(pos.bpm)} bpm stability check`:(posBattle||`${uiBpm(pos.bpm)} bpm stability check`);
           const chromText=isFinite(chromPeak.bpm)?`pos ${battle}, chrom ${uiBpm(chromPeak.bpm)} bpm`:`pos ${battle}`;
           reason=`ambiguous: ${chromText}`;
-          ui.setDetail(`ambiguous candidates: ${chromText}`,"warn");
+          setEstimateDetail(pos,chromPeak,snr,"warn");
           signalLabel="ambiguous";
         }else if(firstNeedsConfirm&&!pendingOk&&isFinite(bpm)){
           reason=`confirming ${Math.round(bpm)} bpm`;
-          ui.setDetail(chosen.stabilized
-            ?`confirming stable estimate: ${Math.round(bpm)} bpm`
-            :`confirming candidate: ${Math.round(bpm)} bpm; waiting for next window`,"warn");
+          setEstimateDetail(pos,chromPeak,snr,"warn");
           signalLabel="confirming";
         }else if(!ensembleOk&&isFinite(chromPeak.bpm)){
           reason=`POS/CHROM disagree: ${uiBpm(pos.bpm)} vs ${uiBpm(chromPeak.bpm)} bpm`;
-          ui.setDetail(`POS/CHROM disagree: ${uiBpm(pos.bpm)} vs ${uiBpm(chromPeak.bpm)} bpm`,"warn");
+          setEstimateDetail(pos,chromPeak,snr,"warn");
           signalLabel="disagree";
         }else{
-          ui.setDetail(reason,"warn");
+          setEstimateDetail(pos,chromPeak,snr,"warn");
         }
         elements.statusEl.textContent=`${reason}... (snr:${snr.toFixed(1)} cv:${(gCv*100).toFixed(2)}% ${fpsEma.toFixed(1)}fps)`;
         ui.setPill(elements.signalPill,signalLabel,"warn");
