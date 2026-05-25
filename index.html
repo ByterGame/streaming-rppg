@@ -69,11 +69,28 @@ body{background:linear-gradient(135deg,#06080c 0%,#0b1018 45%,#07090d 100%)}
 .metric b{display:block;font-size:16px;color:#f8fbff;font-variant-numeric:tabular-nums}
 .metric span{display:block;margin-top:3px;color:var(--muted);font-size:11px}
 @media(max-width:960px){
-  html,body{overflow:auto}
-  .page{height:auto;min-height:100%;padding:12px}
-  .workspace{grid-template-columns:1fr}
-  .video-wrap{min-height:55vh}
-  .info{min-height:0}
+  html,body{overflow:hidden}
+  .page{height:100%;min-height:0;padding:8px;gap:8px;grid-template-rows:auto minmax(0,1fr)}
+  .topbar{min-height:34px;gap:8px}
+  .brand{gap:8px}
+  .mark{width:28px;height:28px;border-radius:6px}
+  .title{font-size:14px}
+  .subtitle,.live-badge{display:none}
+  .workspace{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto;gap:8px}
+  .video-wrap{min-height:0}
+  .info{min-height:0;padding:10px;gap:8px}
+  .section-label{display:none}
+  .hr-card{padding:10px}
+  .hr-row{gap:8px}
+  #hr-value{font-size:44px;line-height:.9}
+  #hr-unit{padding-bottom:4px;font-size:13px}
+  #status{min-height:0;margin-top:7px;font-size:12px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  #detail{display:none}
+  .quality{grid-template-columns:1fr 1fr;gap:6px}
+  .pill{padding:8px 9px;font-size:11px;border-radius:7px}
+  .meta-grid{display:none}
+  .wave-panel{padding:8px}
+  #waveform{height:48px;margin-top:0}
 }
 @media(max-height:680px) and (min-width:961px){
   .page{padding:10px;gap:10px}.workspace{gap:10px}.topbar{min-height:38px}
